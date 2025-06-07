@@ -1,5 +1,4 @@
 import axios from 'axios'
-import * as fs from 'fs'
 import * as path from 'path'
 import { createObjectCsvWriter } from 'csv-writer'
 import dayjs from 'dayjs'
@@ -13,29 +12,18 @@ const repos = [
   { name: 'seed-design', url: 'https://api.github.com/repos/daangn/seed-design/releases' }
 ]
 
-// 2. 릴리즈 기본 타입 정의
-interface ReleaseInfo {
-  repo: string
-  published_at: string
+// 2. 릴리즈 기본 타입 정의 (raw 데이터용)
+interface ReleaseRaw {
+  repo: string // 레포지토리 이름
+  tag_name: string // 태그명
+  name: string // 릴리즈명
+  author: string // 작성자 로그인명
+  published_at: string // 배포일시 ISO
+  draft: boolean // 드래프트 여부
+  prerelease: boolean // 프리릴리즈 여부
 }
 
-// 3. GitHub API 호출해서 릴리즈 데이터 가져오기
-async function fetchReleases(): Promise<ReleaseInfo[]> {
-  const allReleases: ReleaseInfo[] = []
-
-  for (const repo of repos) {
-    const res = await axios.get(repo.url)
-    for (const release of res.data) {
-      allReleases.push({
-        repo: repo.name,
-        published_at: release.published_at
-      })
-    }
-  }
-  return allReleases
-}
-
-// 4. 날짜별 통계 데이터 타입 정의
+// 3. 통계 데이터 타입 정의
 interface StatRow {
   repo: string
   period: 'yearly' | 'monthly' | 'weekly' | 'daily'
@@ -46,15 +34,35 @@ interface StatRow {
   count: number
 }
 
+// 4. GitHub API 호출해서 릴리즈 raw 데이터 가져오기
+async function fetchReleases(): Promise<ReleaseRaw[]> {
+  const allReleases: ReleaseRaw[] = []
+
+  for (const repo of repos) {
+    const res = await axios.get(repo.url)
+    for (const release of res.data) {
+      allReleases.push({
+        repo: repo.name,
+        tag_name: release.tag_name,
+        name: release.name || '',
+        author: release.author?.login || 'unknown',
+        published_at: release.published_at,
+        draft: release.draft,
+        prerelease: release.prerelease
+      })
+    }
+  }
+  return allReleases
+}
+
 // 5. 주말(토,일) 제외 함수
 function isWeekday(date: dayjs.Dayjs) {
   const day = date.day()
-  // day()가 0이면 일요일, 6이면 토요일
   return day !== 0 && day !== 6
 }
 
-// 6. 릴리즈 리스트를 날짜별 통계 데이터로 변환 (주말 제외)
-function buildStats(releases: ReleaseInfo[]): StatRow[] {
+// 6. 릴리즈 raw 데이터를 기반으로 통계 데이터 생성 (주말 제외)
+function buildStats(releases: ReleaseRaw[]): StatRow[] {
   // 주말 제외
   const weekdays = releases.filter(r => isWeekday(dayjs(r.published_at)))
 
@@ -139,8 +147,26 @@ function buildStats(releases: ReleaseInfo[]): StatRow[] {
   return [...yearlyStats, ...monthlyStats, ...weeklyStats, ...dailyStats]
 }
 
-// 7. CSV 파일로 저장
-async function writeCSV(stats: StatRow[]) {
+// 7. raw 데이터 CSV 저장
+async function writeRawCSV(rawData: ReleaseRaw[]) {
+  const csvWriter = createObjectCsvWriter({
+    path: path.join(__dirname, 'release_raw.csv'),
+    header: [
+      { id: 'repo', title: '레포지토리' },
+      { id: 'tag_name', title: '태그명' },
+      { id: 'name', title: '릴리즈명' },
+      { id: 'author', title: '작성자' },
+      { id: 'published_at', title: '배포일시' },
+      { id: 'draft', title: '드래프트' },
+      { id: 'prerelease', title: '프리릴리즈' }
+    ]
+  })
+
+  await csvWriter.writeRecords(rawData)
+}
+
+// 8. 통계 데이터 CSV 저장
+async function writeStatsCSV(stats: StatRow[]) {
   const csvWriter = createObjectCsvWriter({
     path: path.join(__dirname, 'release_stats.csv'),
     header: [
@@ -157,13 +183,22 @@ async function writeCSV(stats: StatRow[]) {
   await csvWriter.writeRecords(stats)
 }
 
-// 8. 실행 함수: 위 모든 단계 연결 (주말 제외 포함)
+// 9. 실행 함수: 모든 단계 연결
 ;(async () => {
   try {
+    // 릴리즈 raw 데이터 가져오기
     const releases = await fetchReleases()
+
+    // raw 데이터 CSV 저장
+    await writeRawCSV(releases)
+
+    // 통계 데이터 생성 (주말 제외)
     const stats = buildStats(releases)
-    await writeCSV(stats)
-    console.log('📄 CSV 파일이 생성되었습니다! (주말 제외)')
+
+    // 통계 CSV 저장
+    await writeStatsCSV(stats)
+
+    console.log('📄 release_raw.csv 및 release_stats.csv 파일이 생성되었습니다!')
   } catch (error) {
     console.error('에러 발생:', error)
   }
